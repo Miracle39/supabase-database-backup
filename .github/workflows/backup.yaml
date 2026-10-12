@@ -52,7 +52,7 @@ jobs:
 
       - name: Backup data
         if: env.BACKUP_ENABLED == 'true'
-        run: supabase db dump --db-url "$SUPABASE_DB_URL" -f prisma/backups/data.sql --data-only --use-copy
+        run: supabase db dump --db-url "$SUPABASE_DB_URL" -f prisma/backups/data.sql --data-only --use-copy --schema public,auth
 
       - name: Commit backups
         if: env.BACKUP_ENABLED == 'true'
