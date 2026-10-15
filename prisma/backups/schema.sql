@@ -45,6 +45,128 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
 
 
 
+CREATE OR REPLACE FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") RETURNS bigint
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+DECLARE
+  v_name text := btrim(p_name);
+  v_category_id bigint;
+  v_is_default boolean;
+  v_old_custom_name text;
+  v_old_name text;
+  v_old_type text;
+  v_is_hidden boolean;
+BEGIN
+  IF auth.uid() IS DISTINCT FROM p_user_id THEN
+    RAISE EXCEPTION 'not_authorized';
+  END IF;
+  IF v_name IS NULL OR char_length(v_name) < 2 THEN
+    RAISE EXCEPTION 'category_name_too_short';
+  END IF;
+  IF p_type NOT IN ('income', 'expense', 'both') THEN
+    RAISE EXCEPTION 'invalid_category_type';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_user_id::text, 0));
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.user_categories AS uc
+    JOIN public.category_catalog AS cc ON cc.id = uc.category_id
+    WHERE uc.user_id = p_user_id
+      AND NOT uc.is_hidden
+      AND lower(btrim(COALESCE(uc.custom_name, cc.name))) = lower(v_name)
+  ) THEN
+    RAISE EXCEPTION 'category_exists' USING ERRCODE = '23505';
+  END IF;
+
+  INSERT INTO public.category_catalog (name, is_default, sort_order)
+  VALUES (v_name, false, 1000)
+  ON CONFLICT (normalized_name) DO UPDATE
+    SET name = public.category_catalog.name
+  RETURNING id, is_default INTO v_category_id, v_is_default;
+
+  -- A hidden default already has a pivot row. Re-adding its base name restores
+  -- that row rather than making a duplicate. If it had been renamed, move this
+  -- user's historical text references back to the restored base name atomically.
+  SELECT uc.is_hidden, uc.custom_name, uc.type
+  INTO v_is_hidden, v_old_custom_name, v_old_type
+  FROM public.user_categories AS uc
+  WHERE uc.user_id = p_user_id AND uc.category_id = v_category_id
+  FOR UPDATE;
+
+  IF FOUND THEN
+    IF NOT v_is_hidden THEN
+      RAISE EXCEPTION 'category_exists' USING ERRCODE = '23505';
+    END IF;
+
+    IF v_is_default AND v_old_custom_name IS NOT NULL
+       AND v_old_custom_name <> v_name THEN
+      v_old_name := v_old_custom_name;
+      UPDATE public.transactions AS t
+      SET category = v_name
+      WHERE t.user_id = p_user_id
+        AND lower(btrim(t.category)) = lower(btrim(v_old_name))
+        AND (v_old_type = 'both' OR t.type = v_old_type);
+
+      IF v_old_type IN ('expense', 'both') THEN
+        UPDATE public.budgets AS b
+        SET category = v_name
+        WHERE b.user_id = p_user_id
+          AND lower(btrim(b.category)) = lower(btrim(v_old_name));
+      END IF;
+
+      UPDATE public.recurring_transactions AS rt
+      SET category = v_name
+      WHERE rt.user_id = p_user_id
+        AND lower(btrim(rt.category)) = lower(btrim(v_old_name))
+        AND (v_old_type = 'both' OR rt.type = v_old_type);
+    END IF;
+
+    UPDATE public.user_categories AS uc
+    SET is_hidden = false,
+        custom_name = NULL,
+        type = CASE WHEN v_is_default THEN 'both' ELSE p_type END,
+        is_default = v_is_default
+    WHERE uc.user_id = p_user_id AND uc.category_id = v_category_id;
+    RETURN v_category_id;
+  END IF;
+
+  INSERT INTO public.user_categories
+    (user_id, category_id, type, is_default, is_hidden)
+  VALUES
+    (p_user_id, v_category_id, CASE WHEN v_is_default THEN 'both' ELSE p_type END, v_is_default, false);
+
+  RETURN v_category_id;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+  IF auth.uid() IS DISTINCT FROM p_user_id THEN
+    RAISE EXCEPTION 'not_authorized';
+  END IF;
+
+  INSERT INTO public.user_categories (user_id, category_id, type, is_default, is_hidden)
+  SELECT p_user_id, cc.id, 'both', true, false
+  FROM public.category_catalog AS cc
+  WHERE cc.is_default
+  ON CONFLICT (user_id, category_id) DO NOTHING;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") RETURNS bigint
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -165,6 +287,126 @@ $$;
 ALTER FUNCTION "public"."lookup_login_email"("p_username" "text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+DECLARE
+  v_is_default boolean;
+BEGIN
+  IF auth.uid() IS DISTINCT FROM p_user_id THEN
+    RAISE EXCEPTION 'not_authorized';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_user_id::text, 0));
+
+  SELECT uc.is_default INTO v_is_default
+  FROM public.user_categories AS uc
+  WHERE uc.user_id = p_user_id
+    AND uc.category_id = p_category_id
+    AND NOT uc.is_hidden
+  FOR UPDATE;
+
+  IF NOT FOUND THEN RAISE EXCEPTION 'category_not_found'; END IF;
+
+  IF v_is_default THEN
+    UPDATE public.user_categories
+    SET is_hidden = true
+    WHERE user_id = p_user_id AND category_id = p_category_id;
+  ELSE
+    DELETE FROM public.user_categories
+    WHERE user_id = p_user_id AND category_id = p_category_id;
+  END IF;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."rename_user_category"("p_user_id" "uuid", "p_category_id" bigint, "p_new_name" "text") RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+DECLARE
+  v_new_name text := btrim(p_new_name);
+  v_master_name text;
+  v_old_name text;
+  v_type text;
+  v_updated integer := 0;
+  v_expected integer := 0;
+BEGIN
+  IF auth.uid() IS DISTINCT FROM p_user_id THEN
+    RAISE EXCEPTION 'not_authorized';
+  END IF;
+  IF v_new_name IS NULL OR char_length(v_new_name) < 2 THEN
+    RAISE EXCEPTION 'category_name_too_short';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_user_id::text, 0));
+
+  SELECT cc.name, COALESCE(uc.custom_name, cc.name), uc.type
+  INTO v_master_name, v_old_name, v_type
+  FROM public.user_categories AS uc
+  JOIN public.category_catalog AS cc ON cc.id = uc.category_id
+  WHERE uc.user_id = p_user_id
+    AND uc.category_id = p_category_id
+    AND NOT uc.is_hidden
+  FOR UPDATE OF uc;
+
+  IF NOT FOUND THEN RAISE EXCEPTION 'category_not_found'; END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM public.user_categories AS other_uc
+    JOIN public.category_catalog AS other_cc ON other_cc.id = other_uc.category_id
+    WHERE other_uc.user_id = p_user_id
+      AND other_uc.category_id <> p_category_id
+      AND NOT other_uc.is_hidden
+      AND lower(btrim(COALESCE(other_uc.custom_name, other_cc.name))) = lower(v_new_name)
+  ) THEN
+    RAISE EXCEPTION 'category_exists' USING ERRCODE = '23505';
+  END IF;
+
+  SELECT count(*)::integer INTO v_expected
+  FROM public.transactions AS t
+  WHERE t.user_id = p_user_id
+    AND lower(btrim(t.category)) = lower(btrim(v_old_name))
+    AND (v_type = 'both' OR t.type = v_type);
+
+  UPDATE public.transactions AS t
+  SET category = v_new_name
+  WHERE t.user_id = p_user_id
+    AND lower(btrim(t.category)) = lower(btrim(v_old_name))
+    AND (v_type = 'both' OR t.type = v_type);
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+  IF v_updated <> v_expected THEN RAISE EXCEPTION 'transaction_history_update_failed'; END IF;
+
+  IF v_type IN ('expense', 'both') THEN
+    UPDATE public.budgets AS b
+    SET category = v_new_name
+    WHERE b.user_id = p_user_id
+      AND lower(btrim(b.category)) = lower(btrim(v_old_name));
+  END IF;
+
+  UPDATE public.recurring_transactions AS rt
+  SET category = v_new_name
+  WHERE rt.user_id = p_user_id
+    AND lower(btrim(rt.category)) = lower(btrim(v_old_name))
+    AND (v_type = 'both' OR rt.type = v_type);
+
+  UPDATE public.user_categories AS uc
+  SET custom_name = CASE WHEN v_new_name = v_master_name THEN NULL ELSE v_new_name END
+  WHERE uc.user_id = p_user_id AND uc.category_id = p_category_id;
+
+  RETURN v_updated;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."rename_user_category"("p_user_id" "uuid", "p_category_id" bigint, "p_new_name" "text") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."seed_default_categories"("target_user_id" "uuid") RETURNS "void"
     LANGUAGE "plpgsql" SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -188,6 +430,24 @@ $$;
 
 
 ALTER FUNCTION "public"."seed_default_categories"("target_user_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."seed_default_user_categories_on_signup"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+  INSERT INTO public.user_categories (user_id, category_id, type, is_default, is_hidden)
+  SELECT NEW.id, cc.id, 'both', true, false
+  FROM public.category_catalog AS cc
+  WHERE cc.is_default
+  ON CONFLICT (user_id, category_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."seed_default_user_categories_on_signup"() OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -233,6 +493,31 @@ ALTER TABLE "public"."categories" OWNER TO "postgres";
 
 ALTER TABLE "public"."categories" ALTER COLUMN "id" ADD GENERATED BY DEFAULT AS IDENTITY (
     SEQUENCE NAME "public"."categories_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."category_catalog" (
+    "id" bigint NOT NULL,
+    "name" "text" NOT NULL,
+    "normalized_name" "text" GENERATED ALWAYS AS ("lower"("btrim"("name"))) STORED,
+    "is_default" boolean DEFAULT false NOT NULL,
+    "sort_order" integer DEFAULT 1000 NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "category_catalog_name_length_check" CHECK (("char_length"("btrim"("name")) >= 2))
+);
+
+
+ALTER TABLE "public"."category_catalog" OWNER TO "postgres";
+
+
+ALTER TABLE "public"."category_catalog" ALTER COLUMN "id" ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME "public"."category_catalog_id_seq"
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -370,6 +655,22 @@ ALTER TABLE "public"."transactions" ALTER COLUMN "id" ADD GENERATED BY DEFAULT A
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."user_categories" (
+    "user_id" "uuid" NOT NULL,
+    "category_id" bigint NOT NULL,
+    "custom_name" "text",
+    "type" "text" DEFAULT 'both'::"text" NOT NULL,
+    "is_default" boolean DEFAULT false NOT NULL,
+    "is_hidden" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "user_categories_custom_name_check" CHECK ((("custom_name" IS NULL) OR ("char_length"("btrim"("custom_name")) >= 2))),
+    CONSTRAINT "user_categories_type_check" CHECK (("type" = ANY (ARRAY['income'::"text", 'expense'::"text", 'both'::"text"])))
+);
+
+
+ALTER TABLE "public"."user_categories" OWNER TO "postgres";
+
+
 ALTER TABLE ONLY "public"."budgets"
     ADD CONSTRAINT "budgets_pkey" PRIMARY KEY ("id");
 
@@ -387,6 +688,11 @@ ALTER TABLE ONLY "public"."categories"
 
 ALTER TABLE ONLY "public"."categories"
     ADD CONSTRAINT "categories_user_name_unique" UNIQUE ("user_id", "name");
+
+
+
+ALTER TABLE ONLY "public"."category_catalog"
+    ADD CONSTRAINT "category_catalog_pkey" PRIMARY KEY ("id");
 
 
 
@@ -425,11 +731,20 @@ ALTER TABLE ONLY "public"."transactions"
 
 
 
+ALTER TABLE ONLY "public"."user_categories"
+    ADD CONSTRAINT "user_categories_pkey" PRIMARY KEY ("user_id", "category_id");
+
+
+
 CREATE INDEX "budgets_user_month_idx" ON "public"."budgets" USING "btree" ("user_id", "month");
 
 
 
 CREATE INDEX "categories_user_name_idx" ON "public"."categories" USING "btree" ("user_id", "name");
+
+
+
+CREATE UNIQUE INDEX "category_catalog_normalized_name_uidx" ON "public"."category_catalog" USING "btree" ("normalized_name");
 
 
 
@@ -446,6 +761,10 @@ CREATE INDEX "recurring_transactions_user_active_idx" ON "public"."recurring_tra
 
 
 CREATE INDEX "transactions_user_date_idx" ON "public"."transactions" USING "btree" ("user_id", "transaction_date" DESC);
+
+
+
+CREATE INDEX "user_categories_user_visible_idx" ON "public"."user_categories" USING "btree" ("user_id", "is_hidden", "category_id");
 
 
 
@@ -491,6 +810,16 @@ ALTER TABLE ONLY "public"."recurring_transactions"
 
 ALTER TABLE ONLY "public"."transactions"
     ADD CONSTRAINT "transactions_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."user_categories"
+    ADD CONSTRAINT "user_categories_category_id_fkey" FOREIGN KEY ("category_id") REFERENCES "public"."category_catalog"("id") ON DELETE RESTRICT;
+
+
+
+ALTER TABLE ONLY "public"."user_categories"
+    ADD CONSTRAINT "user_categories_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
 
 
 
@@ -596,6 +925,15 @@ ALTER TABLE "public"."budgets" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."categories" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."category_catalog" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "category_catalog_authenticated_read" ON "public"."category_catalog" FOR SELECT TO "authenticated" USING (("is_default" OR (EXISTS ( SELECT 1
+   FROM "public"."user_categories" "uc"
+  WHERE (("uc"."category_id" = "category_catalog"."id") AND ("uc"."user_id" = ( SELECT "auth"."uid"() AS "uid")))))));
+
+
+
 ALTER TABLE "public"."financial_goals" ENABLE ROW LEVEL SECURITY;
 
 
@@ -609,6 +947,13 @@ ALTER TABLE "public"."recurring_transactions" ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."transactions" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."user_categories" ENABLE ROW LEVEL SECURITY;
+
+
+CREATE POLICY "user_categories_select_own" ON "public"."user_categories" FOR SELECT TO "authenticated" USING (("user_id" = ( SELECT "auth"."uid"() AS "uid")));
+
 
 
 
@@ -770,6 +1115,20 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") TO "service_role";
+
+
+
 GRANT ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") TO "anon";
 GRANT ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") TO "service_role";
@@ -789,9 +1148,29 @@ GRANT ALL ON FUNCTION "public"."lookup_login_email"("p_username" "text") TO "ser
 
 
 
+REVOKE ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) TO "anon";
+GRANT ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."rename_user_category"("p_user_id" "uuid", "p_category_id" bigint, "p_new_name" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."rename_user_category"("p_user_id" "uuid", "p_category_id" bigint, "p_new_name" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."rename_user_category"("p_user_id" "uuid", "p_category_id" bigint, "p_new_name" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."rename_user_category"("p_user_id" "uuid", "p_category_id" bigint, "p_new_name" "text") TO "service_role";
+
+
+
 GRANT ALL ON FUNCTION "public"."seed_default_categories"("target_user_id" "uuid") TO "anon";
 GRANT ALL ON FUNCTION "public"."seed_default_categories"("target_user_id" "uuid") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."seed_default_categories"("target_user_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."seed_default_user_categories_on_signup"() TO "anon";
+GRANT ALL ON FUNCTION "public"."seed_default_user_categories_on_signup"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."seed_default_user_categories_on_signup"() TO "service_role";
 
 
 
@@ -831,6 +1210,18 @@ GRANT ALL ON TABLE "public"."categories" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."categories_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."categories_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."categories_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."category_catalog" TO "anon";
+GRANT ALL ON TABLE "public"."category_catalog" TO "authenticated";
+GRANT ALL ON TABLE "public"."category_catalog" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."category_catalog_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."category_catalog_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."category_catalog_id_seq" TO "service_role";
 
 
 
@@ -885,6 +1276,12 @@ GRANT ALL ON TABLE "public"."transactions" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."transactions_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."transactions_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."transactions_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."user_categories" TO "anon";
+GRANT ALL ON TABLE "public"."user_categories" TO "authenticated";
+GRANT ALL ON TABLE "public"."user_categories" TO "service_role";
 
 
 
