@@ -13,6 +13,12 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 
+CREATE SCHEMA IF NOT EXISTS "private";
+
+
+ALTER SCHEMA "private" OWNER TO "postgres";
+
+
 COMMENT ON SCHEMA "public" IS 'standard public schema';
 
 
@@ -43,6 +49,132 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
 
 
 
+
+
+CREATE OR REPLACE FUNCTION "private"."enforce_transaction_note_length"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+  IF TG_OP = 'INSERT' OR NEW.note IS DISTINCT FROM OLD.note THEN
+    IF NEW.note IS NOT NULL AND pg_catalog.char_length(NEW.note) > 200 THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_note_too_long';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "private"."enforce_transaction_note_length"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."enforce_transaction_submission_rules"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+DECLARE
+  v_now timestamptz;
+  v_today date;
+  v_last_submitted_at timestamptz;
+BEGIN
+  v_now := pg_catalog.clock_timestamp();
+  v_today := (v_now AT TIME ZONE 'Asia/Jakarta')::date;
+
+  -- Enforce the minimum on inserts and whenever an amount is changed.
+  -- Existing legacy rows below Rp50 can still be edited in other fields.
+  IF NEW.amount IS NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'P0001',
+      MESSAGE = 'transaction_minimum_amount';
+  ELSIF (TG_OP = 'INSERT' OR NEW.amount IS DISTINCT FROM OLD.amount) AND NEW.amount < 50 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'P0001',
+      MESSAGE = 'transaction_minimum_amount';
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.user_id IS NULL THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_user_required';
+    END IF;
+
+    -- Serialize inserts from the same user to stop simultaneous requests from
+    -- racing past the cooldown check. Different users use different locks.
+    PERFORM pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended(NEW.user_id::text, 0::bigint)
+    );
+
+    -- Recompute time after any lock wait, especially around Jakarta midnight.
+    v_now := pg_catalog.clock_timestamp();
+    v_today := (v_now AT TIME ZONE 'Asia/Jakarta')::date;
+
+    IF NEW.transaction_date IS NULL
+       OR NEW.transaction_date < v_today - 7
+       OR NEW.transaction_date > v_today THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_date_out_of_range';
+    END IF;
+
+    SELECT limits.last_submitted_at
+      INTO v_last_submitted_at
+      FROM public.transaction_submission_limits AS limits
+     WHERE limits.user_id = NEW.user_id
+     FOR UPDATE;
+
+    IF v_last_submitted_at IS NOT NULL
+       AND v_last_submitted_at > v_now - INTERVAL '3 seconds' THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_cooldown';
+    END IF;
+
+    INSERT INTO public.transaction_submission_limits (user_id, last_submitted_at)
+    VALUES (NEW.user_id, v_now)
+    ON CONFLICT (user_id) DO UPDATE
+      SET last_submitted_at = EXCLUDED.last_submitted_at;
+
+    -- The client cannot set a fake created_at timestamp to evade throttling.
+    NEW.created_at := v_now;
+
+  ELSIF TG_OP = 'UPDATE' THEN
+    -- Do not allow transferring an existing transaction to another account.
+    IF NEW.user_id IS DISTINCT FROM OLD.user_id THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_user_immutable';
+    END IF;
+
+    -- Future-dated transactions can never be saved. Older legacy transactions
+    -- may be edited only when their existing date is left unchanged.
+    IF NEW.transaction_date IS NULL OR NEW.transaction_date > v_today THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_date_out_of_range';
+    END IF;
+
+    IF NEW.transaction_date IS DISTINCT FROM OLD.transaction_date
+       AND NEW.transaction_date < v_today - 7 THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'transaction_date_out_of_range';
+    END IF;
+
+    -- Keep the original creation time immutable on edits.
+    NEW.created_at := OLD.created_at;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "private"."enforce_transaction_submission_rules"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") RETURNS bigint
@@ -144,6 +276,76 @@ $$;
 
 
 ALTER FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."category_default_type"("p_name" "text") RETURNS "text"
+    LANGUAGE "sql" IMMUTABLE
+    SET "search_path" TO ''
+    AS $$
+  SELECT CASE pg_catalog.lower(pg_catalog.btrim(p_name))
+    WHEN 'gaji' THEN 'income'
+    WHEN 'bonus' THEN 'income'
+    ELSE 'expense'
+  END;
+$$;
+
+
+ALTER FUNCTION "public"."category_default_type"("p_name" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."enforce_text_only_category_name"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $_$
+DECLARE
+  v_name text;
+BEGIN
+  IF TG_TABLE_NAME = 'category_catalog' THEN
+    -- Installed for INSERT only, so legacy catalogue names with punctuation
+    -- are not revalidated during unrelated updates.
+    v_name := NEW.name;
+  ELSIF TG_TABLE_NAME = 'user_categories' THEN
+    IF NEW.custom_name IS NOT NULL THEN
+      v_name := NEW.custom_name;
+    ELSIF TG_OP = 'UPDATE'
+       AND OLD.custom_name IS NOT NULL
+       AND NEW.custom_name IS NULL
+       -- Re-adding a previously hidden default category should continue to
+       -- work even if its original built-in display name contains punctuation.
+       AND NOT (OLD.is_hidden AND NOT NEW.is_hidden) THEN
+      -- A direct rename from a custom name back to an invalid master name must
+      -- not bypass validation by setting custom_name to NULL.
+      SELECT cc.name
+        INTO v_name
+      FROM public.category_catalog AS cc
+      WHERE cc.id = NEW.category_id;
+      IF NOT FOUND THEN
+        RETURN NEW;
+      END IF;
+    ELSE
+      -- NULL means this user's visible name is inherited from a master/default
+      -- category and this statement is not changing an explicit custom name.
+      RETURN NEW;
+    END IF;
+  ELSE
+    RETURN NEW;
+  END IF;
+
+  IF v_name IS NULL
+     OR v_name <> pg_catalog.btrim(v_name)
+     OR pg_catalog.char_length(pg_catalog.btrim(v_name)) < 2
+     OR v_name !~ '^[[:alpha:] ]+$' THEN
+    RAISE EXCEPTION 'invalid_category_name'
+      USING ERRCODE = '22023',
+            DETAIL = 'Category names may contain letters and ordinary spaces only.';
+  END IF;
+
+  RETURN NEW;
+END;
+$_$;
+
+
+ALTER FUNCTION "public"."enforce_text_only_category_name"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") RETURNS "void"
@@ -285,6 +487,32 @@ $$;
 
 
 ALTER FUNCTION "public"."lookup_login_email"("p_username" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."normalize_default_user_category_type"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+DECLARE
+  v_master_name text;
+BEGIN
+  IF NEW.is_default AND NEW.type = 'both' THEN
+    SELECT cc.name
+    INTO v_master_name
+    FROM public.category_catalog AS cc
+    WHERE cc.id = NEW.category_id;
+
+    IF FOUND THEN
+      NEW.type := public.category_default_type(v_master_name);
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."normalize_default_user_category_type"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) RETURNS "void"
@@ -448,6 +676,37 @@ $$;
 
 
 ALTER FUNCTION "public"."seed_default_user_categories_on_signup"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."set_user_category_type"("p_user_id" "uuid", "p_category_id" bigint, "p_type" "text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+  IF auth.uid() IS DISTINCT FROM p_user_id THEN
+    RAISE EXCEPTION 'not_authorized';
+  END IF;
+
+  IF p_type NOT IN ('income', 'expense') THEN
+    RAISE EXCEPTION 'invalid_category_type';
+  END IF;
+
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_user_id::text, 0));
+
+  UPDATE public.user_categories
+  SET type = p_type
+  WHERE user_id = p_user_id
+    AND category_id = p_category_id
+    AND NOT is_hidden;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'category_not_found';
+  END IF;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."set_user_category_type"("p_user_id" "uuid", "p_category_id" bigint, "p_type" "text") OWNER TO "postgres";
 
 SET default_tablespace = '';
 
@@ -626,6 +885,15 @@ ALTER TABLE "public"."recurring_transactions" ALTER COLUMN "id" ADD GENERATED BY
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."transaction_submission_limits" (
+    "user_id" "uuid" NOT NULL,
+    "last_submitted_at" timestamp with time zone NOT NULL
+);
+
+
+ALTER TABLE "public"."transaction_submission_limits" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."transactions" (
     "id" bigint NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -726,6 +994,11 @@ ALTER TABLE ONLY "public"."recurring_transactions"
 
 
 
+ALTER TABLE ONLY "public"."transaction_submission_limits"
+    ADD CONSTRAINT "transaction_submission_limits_pkey" PRIMARY KEY ("user_id");
+
+
+
 ALTER TABLE ONLY "public"."transactions"
     ADD CONSTRAINT "transactions_pkey" PRIMARY KEY ("id");
 
@@ -765,6 +1038,26 @@ CREATE INDEX "transactions_user_date_idx" ON "public"."transactions" USING "btre
 
 
 CREATE INDEX "user_categories_user_visible_idx" ON "public"."user_categories" USING "btree" ("user_id", "is_hidden", "category_id");
+
+
+
+CREATE OR REPLACE TRIGGER "category_catalog_text_only_name_insert" BEFORE INSERT ON "public"."category_catalog" FOR EACH ROW EXECUTE FUNCTION "public"."enforce_text_only_category_name"();
+
+
+
+CREATE OR REPLACE TRIGGER "normalize_default_user_category_type_trigger" BEFORE INSERT OR UPDATE ON "public"."user_categories" FOR EACH ROW EXECUTE FUNCTION "public"."normalize_default_user_category_type"();
+
+
+
+CREATE OR REPLACE TRIGGER "transactions_enforce_note_length" BEFORE INSERT OR UPDATE OF "note" ON "public"."transactions" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_transaction_note_length"();
+
+
+
+CREATE OR REPLACE TRIGGER "transactions_enforce_submission_rules" BEFORE INSERT OR UPDATE ON "public"."transactions" FOR EACH ROW EXECUTE FUNCTION "private"."enforce_transaction_submission_rules"();
+
+
+
+CREATE OR REPLACE TRIGGER "user_categories_text_only_custom_name" BEFORE INSERT OR UPDATE OF "custom_name" ON "public"."user_categories" FOR EACH ROW EXECUTE FUNCTION "public"."enforce_text_only_category_name"();
 
 
 
@@ -946,6 +1239,9 @@ ALTER TABLE "public"."recurring_transaction_runs" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."recurring_transactions" ENABLE ROW LEVEL SECURITY;
 
 
+ALTER TABLE "public"."transaction_submission_limits" ENABLE ROW LEVEL SECURITY;
+
+
 ALTER TABLE "public"."transactions" ENABLE ROW LEVEL SECURITY;
 
 
@@ -1115,10 +1411,32 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 
+REVOKE ALL ON FUNCTION "private"."enforce_transaction_note_length"() FROM PUBLIC;
+
+
+
+REVOKE ALL ON FUNCTION "private"."enforce_transaction_submission_rules"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "anon";
 GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."category_default_type"("p_name" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."category_default_type"("p_name" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."category_default_type"("p_name" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."category_default_type"("p_name" "text") TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."enforce_text_only_category_name"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."enforce_text_only_category_name"() TO "anon";
+GRANT ALL ON FUNCTION "public"."enforce_text_only_category_name"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."enforce_text_only_category_name"() TO "service_role";
 
 
 
@@ -1148,6 +1466,13 @@ GRANT ALL ON FUNCTION "public"."lookup_login_email"("p_username" "text") TO "ser
 
 
 
+REVOKE ALL ON FUNCTION "public"."normalize_default_user_category_type"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."normalize_default_user_category_type"() TO "anon";
+GRANT ALL ON FUNCTION "public"."normalize_default_user_category_type"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."normalize_default_user_category_type"() TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) TO "anon";
 GRANT ALL ON FUNCTION "public"."remove_user_category"("p_user_id" "uuid", "p_category_id" bigint) TO "authenticated";
@@ -1171,6 +1496,13 @@ GRANT ALL ON FUNCTION "public"."seed_default_categories"("target_user_id" "uuid"
 GRANT ALL ON FUNCTION "public"."seed_default_user_categories_on_signup"() TO "anon";
 GRANT ALL ON FUNCTION "public"."seed_default_user_categories_on_signup"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."seed_default_user_categories_on_signup"() TO "service_role";
+
+
+
+REVOKE ALL ON FUNCTION "public"."set_user_category_type"("p_user_id" "uuid", "p_category_id" bigint, "p_type" "text") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."set_user_category_type"("p_user_id" "uuid", "p_category_id" bigint, "p_type" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."set_user_category_type"("p_user_id" "uuid", "p_category_id" bigint, "p_type" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."set_user_category_type"("p_user_id" "uuid", "p_category_id" bigint, "p_type" "text") TO "service_role";
 
 
 
@@ -1264,6 +1596,10 @@ GRANT ALL ON TABLE "public"."recurring_transactions" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."recurring_transactions_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."recurring_transactions_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."recurring_transactions_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."transaction_submission_limits" TO "service_role";
 
 
 
