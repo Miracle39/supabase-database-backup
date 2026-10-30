@@ -4,7 +4,7 @@ SET session_replication_role = replica;
 -- PostgreSQL database dump
 --
 
--- \restrict oTcb0PVyxP04bANc9Jarjg29C3HhnoIunDHDC3jHY6KegrGTnHW3yCaX3N8XUdl
+-- \restrict 3qZ0wC258t1bEVe03vXeoBDKnYkDax8oVVSjnqSA4UZNv7jjkshLsi9q6FocfKo
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11
@@ -50,8 +50,8 @@ COPY "auth"."flow_state" ("id", "user_id", "auth_code", "code_challenge_method",
 --
 
 COPY "auth"."users" ("instance_id", "id", "aud", "role", "email", "encrypted_password", "email_confirmed_at", "invited_at", "confirmation_token", "confirmation_sent_at", "recovery_token", "recovery_sent_at", "email_change_token_new", "email_change", "email_change_sent_at", "last_sign_in_at", "raw_app_meta_data", "raw_user_meta_data", "is_super_admin", "created_at", "updated_at", "phone", "phone_confirmed_at", "phone_change", "phone_change_token", "phone_change_sent_at", "email_change_token_current", "email_change_confirm_status", "banned_until", "reauthentication_token", "reauthentication_sent_at", "is_sso_user", "deleted_at", "is_anonymous") FROM stdin;
-00000000-0000-0000-0000-000000000000	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	authenticated	authenticated	luqmankun9029@gmail.com	$2a$10$ZRDnTkXocOBpwbtV7S1ssObfPYhb8O12G7YPtfrJ9z4O1341kFos2	2026-09-24 02:26:44.882371+07	\N		\N		\N			\N	2026-10-27 13:49:24.856973+07	{"provider": "email", "providers": ["email"]}	{"username": "luqman", "email_verified": true}	\N	2026-09-24 02:26:44.830934+07	2026-10-29 02:19:44.872469+07	\N	\N			\N		0	\N		\N	f	\N	f
 00000000-0000-0000-0000-000000000000	0941d6f4-4f0d-4dd1-8ca2-70fa36b59ccd	authenticated	authenticated	faridzki.aqmal@gmail.com	$2a$10$TG/RZDUCT8Vz6teWnGivEOqdjT5VKRGSpr4Z9/tSkLl3/dDnPASle	2026-10-04 00:43:26.773296+07	\N		2026-10-04 00:43:11.877731+07		\N			\N	2026-10-08 12:28:02.024889+07	{"provider": "email", "providers": ["email"]}	{"sub": "0941d6f4-4f0d-4dd1-8ca2-70fa36b59ccd", "email": "faridzki.aqmal@gmail.com", "username": "tai", "email_verified": true, "phone_verified": false}	\N	2026-10-04 00:43:11.779738+07	2026-10-08 12:28:02.041085+07	\N	\N			\N		0	\N		\N	f	\N	f
+00000000-0000-0000-0000-000000000000	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	authenticated	authenticated	luqmankun9029@gmail.com	$2a$10$ZRDnTkXocOBpwbtV7S1ssObfPYhb8O12G7YPtfrJ9z4O1341kFos2	2026-09-24 02:26:44.882371+07	\N		\N		\N			\N	2026-10-30 07:58:22.836082+07	{"provider": "email", "providers": ["email"]}	{"username": "luqman", "email_verified": true}	\N	2026-09-24 02:26:44.830934+07	2026-10-30 07:58:22.900909+07	\N	\N			\N		0	\N		\N	f	\N	f
 00000000-0000-0000-0000-000000000000	8bd5441c-ad00-4d75-9651-cc4b61c0f942	authenticated	authenticated	rlayuta998@gmail.com	$2a$10$bhAcXcrrFCm9/y27fDbD.O10ctlCcr6KowHBDEKP0u53XhFyoRNHq	\N	\N	e56a8b34507ac5aa7c6e6acf41d52f1847ad2c64ed9a3d4b2005ec0a	2026-10-06 19:30:32.443836+07		\N			\N	\N	{"provider": "email", "providers": ["email"]}	{"sub": "8bd5441c-ad00-4d75-9651-cc4b61c0f942", "email": "rlayuta998@gmail.com", "username": "rlayuta", "email_verified": false, "phone_verified": false}	\N	2026-10-06 19:30:32.387993+07	2026-10-06 19:30:35.181113+07	\N	\N			\N		0	\N		\N	f	\N	f
 00000000-0000-0000-0000-000000000000	71532f37-a14c-4909-b1fd-f499d8783a38	authenticated	authenticated	faharmp17@gmail.com	$2a$10$.5g2yt7xCrovu7viP8OdmunEoK25nzLRhy2h9hHlnFjbdrzvDeu66	2026-10-08 12:12:56.288449+07	\N		2026-10-08 12:12:33.304197+07		\N			\N	2026-10-09 16:05:22.019825+07	{"provider": "email", "providers": ["email"]}	{"sub": "71532f37-a14c-4909-b1fd-f499d8783a38", "email": "faharmp17@gmail.com", "username": "kurei shop", "email_verified": true, "phone_verified": false}	\N	2026-10-08 12:12:33.25404+07	2026-10-28 00:12:08.70757+07	\N	\N			\N		0	\N		\N	f	\N	f
 00000000-0000-0000-0000-000000000000	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	authenticated	authenticated	wowsrumahmakan@gmail.com	$2a$10$QRl5/Xc91tAGt/dPPgheguXbeCBhosmg8CqYf9w7ihR.eZRY5aVrW	2026-10-06 23:40:03.312655+07	\N		\N		\N			\N	2026-10-12 11:56:01.82408+07	{"provider": "email", "providers": ["email"]}	{"username": "rlayuta", "email_verified": true}	\N	2026-10-06 23:40:03.295524+07	2026-10-28 21:04:28.745471+07	\N	\N			\N		0	\N		\N	f	\N	f
@@ -101,6 +101,7 @@ COPY "auth"."oauth_clients" ("id", "client_secret_hash", "registration_type", "r
 
 COPY "auth"."sessions" ("id", "user_id", "created_at", "updated_at", "factor_id", "aal", "not_after", "refreshed_at", "user_agent", "ip", "tag", "oauth_client_id", "refresh_token_hmac_key", "refresh_token_counter", "scopes") FROM stdin;
 c7b199d8-a5ff-4805-97ef-525a4bdd7c41	543c1512-85e1-49e3-803c-463e9dea8091	2026-10-05 15:58:42.016484+07	2026-10-05 15:58:42.016484+07	\N	aal1	\N	\N	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36	36.50.219.27	\N	\N	\N	\N	\N
+dc811ddf-91c7-436c-97bd-07532122abb9	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-30 07:58:22.836732+07	2026-10-30 07:58:22.836732+07	\N	aal1	\N	\N	Mozilla/5.0 (iPhone; CPU iPhone OS 16_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1	114.122.102.195	\N	\N	\N	\N	\N
 14d21d0a-fe16-436e-a3c2-ab8c03b8b489	71532f37-a14c-4909-b1fd-f499d8783a38	2026-10-08 12:12:56.299724+07	2026-10-08 12:12:56.299724+07	\N	aal1	\N	\N	Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36	36.50.219.27	\N	\N	\N	\N	\N
 677bfaa6-6400-4715-b240-e0130219a9ea	0941d6f4-4f0d-4dd1-8ca2-70fa36b59ccd	2026-10-08 12:28:02.027481+07	2026-10-08 12:28:02.027481+07	\N	aal1	\N	\N	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36 OPR/136.0.0.0	157.85.212.220	\N	\N	\N	\N	\N
 feaec2ad-02db-41eb-ba8c-19a1459c8412	126faf31-b09e-4087-a462-540d81a3131e	2026-10-03 06:22:37.163993+07	2026-10-03 18:43:58.359937+07	\N	aal1	\N	2026-10-03 11:43:58.359833	Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36	182.5.136.140	\N	\N	\N	\N	\N
@@ -120,6 +121,7 @@ d7ff56ee-1217-48b9-b2f4-daffe4309e2c	71532f37-a14c-4909-b1fd-f499d8783a38	2026-1
 COPY "auth"."mfa_amr_claims" ("session_id", "created_at", "updated_at", "authentication_method", "id") FROM stdin;
 959f43c6-6237-456c-97be-763a47c213a0	2026-10-08 21:18:00.417032+07	2026-10-08 21:18:00.417032+07	password	fff14a07-0bc3-45d5-b83b-df76a01e37e9
 d7ff56ee-1217-48b9-b2f4-daffe4309e2c	2026-10-09 16:05:22.081766+07	2026-10-09 16:05:22.081766+07	password	a8d8a7de-4606-4d62-b11d-2599698cb5e0
+dc811ddf-91c7-436c-97bd-07532122abb9	2026-10-30 07:58:22.918328+07	2026-10-30 07:58:22.918328+07	password	8d64b840-e7fa-4fc7-8a42-a838599d39eb
 feaec2ad-02db-41eb-ba8c-19a1459c8412	2026-10-03 06:22:37.178661+07	2026-10-03 06:22:37.178661+07	password	6355e8ee-ff71-453b-b955-1174b19e6720
 c7b199d8-a5ff-4805-97ef-525a4bdd7c41	2026-10-05 15:58:42.043582+07	2026-10-05 15:58:42.043582+07	otp	d7f77352-d775-46b3-a241-f685187b0fe6
 25b833cc-0f00-4a41-89f5-e84af142bf86	2026-10-10 20:50:18.864694+07	2026-10-10 20:50:18.864694+07	password	cd7e97d2-dbcb-4c35-9f66-e2c5bdfefaa1
@@ -312,6 +314,7 @@ COPY "auth"."refresh_tokens" ("instance_id", "id", "token", "user_id", "revoked"
 00000000-0000-0000-0000-000000000000	318	ntvsjz7r3t4k	71532f37-a14c-4909-b1fd-f499d8783a38	f	2026-10-28 00:12:08.694257+07	2026-10-28 00:12:08.694257+07	5xlv3kaxtrjp	d7ff56ee-1217-48b9-b2f4-daffe4309e2c
 00000000-0000-0000-0000-000000000000	316	6t3axx5y6zvc	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	t	2026-10-27 21:24:54.173028+07	2026-10-28 21:04:28.700146+07	av75vtzjo2sw	25b833cc-0f00-4a41-89f5-e84af142bf86
 00000000-0000-0000-0000-000000000000	319	7e3supy5gccm	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	f	2026-10-28 21:04:28.730059+07	2026-10-28 21:04:28.730059+07	6t3axx5y6zvc	25b833cc-0f00-4a41-89f5-e84af142bf86
+00000000-0000-0000-0000-000000000000	321	sqd6zelstmxh	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	f	2026-10-30 07:58:22.877333+07	2026-10-30 07:58:22.877333+07	\N	dc811ddf-91c7-436c-97bd-07532122abb9
 \.
 
 
@@ -684,6 +687,7 @@ COPY "public"."transactions" ("id", "user_id", "transaction_date", "type", "cate
 277	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	2026-10-14	expense	Makanan	44000.00	Cash	Makan Malem	2026-10-14 23:30:41.258593+07
 284	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-16	expense	Lainnya	4000.00	Cash	Admin gestun indomaret	2026-10-16 09:47:56.133471+07
 293	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-17	expense	Lainnya	50000.00	Cash	ke d irfan	2026-10-17 21:22:42.433454+07
+355	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-29	income	Investasi	20000.00	Cash	Buat bensin	2026-10-30 07:58:39.400003+07
 300	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-18	expense	Perkir	2000.00	Cash	parkir rrq arena	2026-10-19 10:23:32.34964+07
 308	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	2026-10-20	expense	Transportasi	25000.00	Cash	Bensin	2026-10-20 13:11:57.94796+07
 314	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	2026-10-22	expense	Makanan	40000.00	Transfer Bank	Kupat + Alfamart	2026-10-22 08:42:28.920523+07
@@ -694,7 +698,9 @@ COPY "public"."transactions" ("id", "user_id", "transaction_date", "type", "cate
 206	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-09	expense	Kuliner	10000.00	Cash	Nasi kuning sama gorengan	2026-10-09 07:01:45.245001+07
 344	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-27	expense	Transportasi	20000.00	QRIS	Bensin buat foto meganeco	2026-10-27 13:49:52.781105+07
 350	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	2026-10-28	expense	Belanja	250000.00	Cash	Komis	2026-10-28 21:07:08.411552+07
+356	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-30	income	Investasi	200000.00	Transfer Bank	Buat pegangan ke tangerang dari ayah	2026-10-30 07:59:39.388715+07
 109	71532f37-a14c-4909-b1fd-f499d8783a38	2026-10-08	expense	Investasi	5000000.00	Transfer Bank	TABUNGAN	2026-10-08 12:19:15.243924+07
+357	27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-30	expense	Kuliner	37000.00	QRIS	Bolu susu buat rithe	2026-10-30 08:00:06.701924+07
 212	71532f37-a14c-4909-b1fd-f499d8783a38	2026-10-09	expense	Makanan	101500.00	Transfer Bank	Makan siang	2026-10-09 12:34:20.905279+07
 224	9cc4f707-42ad-4005-9edb-b0aee7921de4	2026-10-09	income	Gaji	1500000.00	Transfer Bank	cek tome zone db	2026-10-09 23:48:40.442431+07
 230	5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	2026-10-10	expense	Makanan	17000.00	Cash	\N	2026-10-10 09:18:36.893134+07
@@ -785,8 +791,8 @@ COPY "public"."recurring_transaction_runs" ("id", "user_id", "recurring_transact
 
 COPY "public"."transaction_submission_limits" ("user_id", "last_submitted_at") FROM stdin;
 9cc4f707-42ad-4005-9edb-b0aee7921de4	2026-10-26 02:01:48.575775+07
-27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-27 22:24:55.266073+07
 5bb36e5c-7283-4341-bc7f-de5b3c0fef5e	2026-10-28 21:10:04.252463+07
+27d0f21a-efea-48e0-bc00-a1394c5dd3a8	2026-10-30 08:00:06.701924+07
 \.
 
 
@@ -907,7 +913,7 @@ COPY "public"."user_categories" ("user_id", "category_id", "custom_name", "type"
 -- Name: refresh_tokens_id_seq; Type: SEQUENCE SET; Schema: auth; Owner: supabase_auth_admin
 --
 
-SELECT pg_catalog.setval('"auth"."refresh_tokens_id_seq"', 320, true);
+SELECT pg_catalog.setval('"auth"."refresh_tokens_id_seq"', 321, true);
 
 
 --
@@ -956,13 +962,13 @@ SELECT pg_catalog.setval('"public"."recurring_transactions_id_seq"', 7, true);
 -- Name: transactions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
 --
 
-SELECT pg_catalog.setval('"public"."transactions_id_seq"', 354, true);
+SELECT pg_catalog.setval('"public"."transactions_id_seq"', 357, true);
 
 
 --
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict oTcb0PVyxP04bANc9Jarjg29C3HhnoIunDHDC3jHY6KegrGTnHW3yCaX3N8XUdl
+-- \unrestrict 3qZ0wC258t1bEVe03vXeoBDKnYkDax8oVVSjnqSA4UZNv7jjkshLsi9q6FocfKo
 
 RESET ALL;
