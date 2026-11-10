@@ -80,45 +80,72 @@ DECLARE
   v_now timestamptz;
   v_today date;
   v_last_submitted_at timestamptz;
+  v_is_recurring_generation boolean := false;
 BEGIN
   v_now := pg_catalog.clock_timestamp();
   v_today := (v_now AT TIME ZONE 'Asia/Jakarta')::date;
 
   -- Enforce the minimum on inserts and whenever an amount is changed.
-  -- Existing legacy rows below Rp50 can still be edited in other fields.
   IF NEW.amount IS NULL THEN
-    RAISE EXCEPTION USING
-      ERRCODE = 'P0001',
-      MESSAGE = 'transaction_minimum_amount';
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_minimum_amount';
   ELSIF (TG_OP = 'INSERT' OR NEW.amount IS DISTINCT FROM OLD.amount) AND NEW.amount < 50 THEN
-    RAISE EXCEPTION USING
-      ERRCODE = 'P0001',
-      MESSAGE = 'transaction_minimum_amount';
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_minimum_amount';
   END IF;
 
   IF TG_OP = 'INSERT' THEN
     IF NEW.user_id IS NULL THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'transaction_user_required';
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_user_required';
     END IF;
 
-    -- Serialize inserts from the same user to stop simultaneous requests from
-    -- racing past the cooldown check. Different users use different locks.
+    -- Only a pending run row created by generate_recurring_transaction can mark
+    -- the transaction as a recurring instance. Run rows have no client INSERT policy.
+    -- Match owner, month, scheduled day, type, category, amount and payment method.
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.recurring_transaction_runs AS rr
+      JOIN public.recurring_transactions AS rt
+        ON rt.id = rr.recurring_transaction_id
+       AND rt.user_id = rr.user_id
+      WHERE rr.user_id = NEW.user_id
+        AND rr.transaction_id IS NULL
+        AND rr.month = pg_catalog.date_trunc('month', NEW.transaction_date)::date
+        AND rt.active = true
+        AND NEW.transaction_date = pg_catalog.make_date(
+          pg_catalog.date_part('year', rr.month::timestamp)::integer,
+          pg_catalog.date_part('month', rr.month::timestamp)::integer,
+          LEAST(
+            rt.day_of_month,
+            pg_catalog.date_part('day', (rr.month + interval '1 month - 1 day'))::integer
+          )
+        )
+        AND NEW.transaction_date <= v_today
+        AND NEW.transaction_date >= rt.start_date
+        AND (rt.end_date IS NULL OR NEW.transaction_date <= rt.end_date)
+        AND NEW.type = rt.type
+        AND NEW.category = rt.category
+        AND NEW.amount = rt.amount
+        AND COALESCE(NEW.payment_method, '') = COALESCE(rt.payment_method, '')
+    ) INTO v_is_recurring_generation;
+
+    IF v_is_recurring_generation THEN
+      -- Scheduled recurring transactions can legitimately be older than 7 days.
+      -- They do not consume the manual-entry 3-second cooldown.
+      NEW.created_at := v_now;
+      RETURN NEW;
+    END IF;
+
+    -- Regular/manual transactions retain the original date-window restriction.
     PERFORM pg_catalog.pg_advisory_xact_lock(
       pg_catalog.hashtextextended(NEW.user_id::text, 0::bigint)
     );
 
-    -- Recompute time after any lock wait, especially around Jakarta midnight.
     v_now := pg_catalog.clock_timestamp();
     v_today := (v_now AT TIME ZONE 'Asia/Jakarta')::date;
 
     IF NEW.transaction_date IS NULL
        OR NEW.transaction_date < v_today - 7
        OR NEW.transaction_date > v_today THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'transaction_date_out_of_range';
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_date_out_of_range';
     END IF;
 
     SELECT limits.last_submitted_at
@@ -129,43 +156,35 @@ BEGIN
 
     IF v_last_submitted_at IS NOT NULL
        AND v_last_submitted_at > v_now - INTERVAL '3 seconds' THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'transaction_cooldown';
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_cooldown';
     END IF;
 
     INSERT INTO public.transaction_submission_limits (user_id, last_submitted_at)
     VALUES (NEW.user_id, v_now)
-    ON CONFLICT (user_id) DO UPDATE
-      SET last_submitted_at = EXCLUDED.last_submitted_at;
+    ON CONFLICT (user_id) DO UPDATE SET last_submitted_at = EXCLUDED.last_submitted_at;
 
-    -- The client cannot set a fake created_at timestamp to evade throttling.
     NEW.created_at := v_now;
 
   ELSIF TG_OP = 'UPDATE' THEN
-    -- Do not allow transferring an existing transaction to another account.
     IF NEW.user_id IS DISTINCT FROM OLD.user_id THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'transaction_user_immutable';
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_user_immutable';
     END IF;
 
-    -- Future-dated transactions can never be saved. Older legacy transactions
-    -- may be edited only when their existing date is left unchanged.
+    -- A legacy transaction older than seven days can be edited only without changing its date.
+    IF OLD.transaction_date < v_today - 7
+       AND NEW.transaction_date IS DISTINCT FROM OLD.transaction_date THEN
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_legacy_date_immutable';
+    END IF;
+
     IF NEW.transaction_date IS NULL OR NEW.transaction_date > v_today THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'transaction_date_out_of_range';
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_date_out_of_range';
     END IF;
 
     IF NEW.transaction_date IS DISTINCT FROM OLD.transaction_date
        AND NEW.transaction_date < v_today - 7 THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'transaction_date_out_of_range';
+      RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'transaction_date_out_of_range';
     END IF;
 
-    -- Keep the original creation time immutable on edits.
     NEW.created_at := OLD.created_at;
   END IF;
 
@@ -175,6 +194,22 @@ $$;
 
 
 ALTER FUNCTION "private"."enforce_transaction_submission_rules"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "private"."release_recurring_run_on_transaction_delete"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+  DELETE FROM public.recurring_transaction_runs AS rr
+   WHERE rr.transaction_id = OLD.id
+     AND rr.user_id = OLD.user_id;
+  RETURN OLD;
+END;
+$$;
+
+
+ALTER FUNCTION "private"."release_recurring_run_on_transaction_delete"() OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") RETURNS bigint
@@ -371,9 +406,9 @@ ALTER FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid") OWNE
 
 CREATE OR REPLACE FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") RETURNS bigint
     LANGUAGE "plpgsql" SECURITY DEFINER
-    SET "search_path" TO 'public'
+    SET "search_path" TO ''
     AS $$
-declare
+DECLARE
   r public.recurring_transactions%rowtype;
   v_month date;
   v_last_day integer;
@@ -381,72 +416,72 @@ declare
   v_target_date date;
   v_run_id bigint;
   v_transaction_id bigint;
-begin
-  if auth.uid() is null then
-    raise exception 'Not authenticated';
-  end if;
+  v_note text;
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
 
-  v_month := date_trunc('month', p_month)::date;
+  v_month := pg_catalog.date_trunc('month', p_month)::date;
 
-  select * into r
-  from public.recurring_transactions
-  where id = p_recurring_id
-    and user_id = auth.uid();
+  SELECT * INTO r
+    FROM public.recurring_transactions
+   WHERE id = p_recurring_id
+     AND user_id = auth.uid();
 
-  if not found then
-    raise exception 'Recurring transaction not found';
-  end if;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Recurring transaction not found';
+  END IF;
 
-  if not r.active then
-    return null;
-  end if;
+  IF NOT r.active THEN
+    RETURN NULL;
+  END IF;
 
-  v_last_day := extract(day from (v_month + interval '1 month - 1 day'))::integer;
-  v_day := least(r.day_of_month, v_last_day);
-  v_target_date := make_date(extract(year from v_month)::integer, extract(month from v_month)::integer, v_day);
+  v_last_day := pg_catalog.date_part('day', (v_month + interval '1 month - 1 day'))::integer;
+  v_day := LEAST(r.day_of_month, v_last_day);
+  v_target_date := pg_catalog.make_date(
+    pg_catalog.date_part('year', v_month::timestamp)::integer,
+    pg_catalog.date_part('month', v_month::timestamp)::integer,
+    v_day
+  );
 
-  if v_target_date < r.start_date or (r.end_date is not null and v_target_date > r.end_date) then
-    return null;
-  end if;
+  IF v_target_date < r.start_date OR (r.end_date IS NOT NULL AND v_target_date > r.end_date) THEN
+    RETURN NULL;
+  END IF;
 
-  insert into public.recurring_transaction_runs (user_id, recurring_transaction_id, month)
-  values (auth.uid(), r.id, v_month)
-  on conflict (recurring_transaction_id, month) do nothing
-  returning id into v_run_id;
+  -- Preserve semantics: only the current/past schedule can generate an entry.
+  IF v_target_date > (pg_catalog.clock_timestamp() AT TIME ZONE 'Asia/Jakarta')::date THEN
+    RETURN -2;
+  END IF;
 
-  if v_run_id is null then
-    return -1;
-  end if;
+  INSERT INTO public.recurring_transaction_runs (user_id, recurring_transaction_id, month)
+  VALUES (auth.uid(), r.id, v_month)
+  ON CONFLICT (recurring_transaction_id, month) DO NOTHING
+  RETURNING id INTO v_run_id;
 
-  insert into public.transactions (
-    user_id,
-    transaction_date,
-    type,
-    category,
-    amount,
-    payment_method,
-    note
-  )
-  values (
-    auth.uid(),
-    v_target_date,
-    r.type,
-    r.category,
-    r.amount,
-    r.payment_method,
-    case
-      when r.note is null or trim(r.note) = '' then 'Transaksi berulang: ' || r.name
-      else r.note || ' • Transaksi berulang: ' || r.name
-    end
-  )
-  returning id into v_transaction_id;
+  IF v_run_id IS NULL THEN
+    RETURN -1;
+  END IF;
 
-  update public.recurring_transaction_runs
-  set transaction_id = v_transaction_id
-  where id = v_run_id;
+  v_note := CASE
+    WHEN r.note IS NULL OR pg_catalog.btrim(r.note) = ''
+      THEN 'Transaksi berulang: ' || r.name
+    ELSE r.note || ' • Transaksi berulang: ' || r.name
+  END;
+  v_note := pg_catalog.left(v_note, 200);
 
-  return v_transaction_id;
-end;
+  INSERT INTO public.transactions (
+    user_id, transaction_date, type, category, amount, payment_method, note
+  ) VALUES (
+    auth.uid(), v_target_date, r.type, r.category, r.amount, r.payment_method, v_note
+  ) RETURNING id INTO v_transaction_id;
+
+  UPDATE public.recurring_transaction_runs
+     SET transaction_id = v_transaction_id
+   WHERE id = v_run_id;
+
+  RETURN v_transaction_id;
+END;
 $$;
 
 
@@ -1057,6 +1092,10 @@ CREATE OR REPLACE TRIGGER "transactions_enforce_submission_rules" BEFORE INSERT 
 
 
 
+CREATE OR REPLACE TRIGGER "transactions_release_recurring_run_before_delete" BEFORE DELETE ON "public"."transactions" FOR EACH ROW EXECUTE FUNCTION "private"."release_recurring_run_on_transaction_delete"();
+
+
+
 CREATE OR REPLACE TRIGGER "user_categories_text_only_custom_name" BEFORE INSERT OR UPDATE OF "custom_name" ON "public"."user_categories" FOR EACH ROW EXECUTE FUNCTION "public"."enforce_text_only_category_name"();
 
 
@@ -1419,6 +1458,10 @@ REVOKE ALL ON FUNCTION "private"."enforce_transaction_submission_rules"() FROM P
 
 
 
+REVOKE ALL ON FUNCTION "private"."release_recurring_run_on_transaction_delete"() FROM PUBLIC;
+
+
+
 REVOKE ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "anon";
 GRANT ALL ON FUNCTION "public"."add_user_category"("p_user_id" "uuid", "p_name" "text", "p_type" "text") TO "authenticated";
@@ -1447,7 +1490,7 @@ GRANT ALL ON FUNCTION "public"."ensure_user_category_defaults"("p_user_id" "uuid
 
 
 
-GRANT ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") TO "anon";
+REVOKE ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") TO "authenticated";
 GRANT ALL ON FUNCTION "public"."generate_recurring_transaction"("p_recurring_id" bigint, "p_month" "date") TO "service_role";
 
