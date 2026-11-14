@@ -4,7 +4,7 @@ SET session_replication_role = replica;
 -- PostgreSQL database dump
 --
 
--- \restrict ouKRWG86jD2lPzw5aVHXJbuI1JVHiBSzedoNPhbMh3P6BdHvsRTdyauB6Q2SPMY
+-- \restrict lIOVbxEIdV1FnkewMVSZMLH4xTW64BGb5iesWVQfdj96I2rw7maWh6w9FmfgwTV
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11
@@ -1058,6 +1058,6 @@ SELECT pg_catalog.setval('"public"."transactions_id_seq"', 402, true);
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict ouKRWG86jD2lPzw5aVHXJbuI1JVHiBSzedoNPhbMh3P6BdHvsRTdyauB6Q2SPMY
+-- \unrestrict lIOVbxEIdV1FnkewMVSZMLH4xTW64BGb5iesWVQfdj96I2rw7maWh6w9FmfgwTV
 
 RESET ALL;
